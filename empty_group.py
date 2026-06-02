@@ -121,6 +121,16 @@ def digit_char(event):
     }
     return tbl.get(event.type)
 
+def _all_empties_items(self, context):
+    """シーン内の全エンプティを選択肢として返す"""
+    items = [
+        (obj.name, obj.name, f"子オブジェクト: {len(obj.children)} 個")
+        for obj in sorted(bpy.data.objects, key=lambda o: o.name)
+        if obj.type == 'EMPTY'
+    ]
+    return items or [("__NONE__", "（エンプティがありません）", "")]
+
+
 def _available_empties_items(self, context):
     active = context.active_object
     items = [
@@ -554,7 +564,16 @@ class OBJECT_OT_empty_group(bpy.types.Operator):
     bl_label   = "Empty Group"
     bl_options = {'REGISTER', 'UNDO'}
 
-    group_name: StringProperty(name="グループ名", default="Group", maxlen=63)
+    mode: EnumProperty(
+        name="モード",
+        items=[
+            ('NEW', "新規グループを作成", "選択オブジェクトから新しいグループを作る"),
+            ('ADD', "既存グループに追加",  "選択オブジェクトを既存のエンプティに追加する"),
+        ],
+        default='NEW',
+    )
+    target_empty: EnumProperty(name="追加先グループ", items=_all_empties_items)
+    group_name:   StringProperty(name="グループ名", default="Group", maxlen=63)
     display_size: FloatProperty(name="表示サイズ", default=1.0, min=0.001, soft_max=20.0, step=10, precision=3)
     empty_type: EnumProperty(
         name="エンプティの種類",
@@ -584,28 +603,55 @@ class OBJECT_OT_empty_group(bpy.types.Operator):
         s = context.scene.empty_group_settings
         self.display_size = s.default_size
         self.empty_type   = s.default_empty_type
-        return context.window_manager.invoke_props_dialog(self, width=340)
+        # エンプティが一つもなければ強制的に NEW
+        has_empties = any(o.type == 'EMPTY' for o in bpy.data.objects)
+        if not has_empties:
+            self.mode = 'NEW'
+        return context.window_manager.invoke_props_dialog(self, width=360)
 
     def draw(self, context):
         layout = self.layout
         layout.use_property_split = True
         layout.use_property_decorate = False
+
         layout.label(text=f"選択オブジェクト数: {len(get_targets(context))}", icon='OBJECT_DATA')
         layout.separator(factor=0.5)
-        col = layout.column(align=True)
-        col.prop(self, "group_name")
-        col.prop(self, "empty_type")
-        col.prop(self, "display_size")
-        layout.separator(factor=0.5)
-        col = layout.column(align=True)
-        col.prop(self, "parent_objects")
-        sub = col.column()
-        sub.enabled = self.parent_objects
-        sub.prop(self, "keep_transform")
-        layout.separator(factor=0.5)
-        layout.label(text="OK 後、サイズ変更モードに入ります", icon='INFO')
+
+        # モード切り替え（エンプティがある時だけ表示）
+        has_empties = any(o.type == 'EMPTY' for o in bpy.data.objects)
+        if has_empties:
+            layout.prop(self, "mode", expand=True)
+            layout.separator(factor=0.5)
+
+        if self.mode == 'NEW':
+            # ── 新規作成 ───────────────────────────────
+            col = layout.column(align=True)
+            col.prop(self, "group_name")
+            col.prop(self, "empty_type")
+            col.prop(self, "display_size")
+            layout.separator(factor=0.5)
+            col = layout.column(align=True)
+            col.prop(self, "parent_objects")
+            sub = col.column()
+            sub.enabled = self.parent_objects
+            sub.prop(self, "keep_transform")
+            layout.separator(factor=0.5)
+            layout.label(text="OK 後、サイズ変更モードに入ります", icon='INFO')
+
+        else:
+            # ── 既存グループに追加 ─────────────────────
+            layout.prop(self, "target_empty")
+            layout.separator(factor=0.5)
+            layout.prop(self, "keep_transform")
 
     def execute(self, context):
+        if self.mode == 'ADD':
+            return self._add_to_existing(context)
+        return self._create_new(context)
+
+    # ── 新規グループ作成 ───────────────────────────────
+
+    def _create_new(self, context):
         targets = get_targets(context)
         if not targets:
             self.report({'WARNING'}, "メッシュオブジェクトが選択されていません")
@@ -635,6 +681,36 @@ class OBJECT_OT_empty_group(bpy.types.Operator):
 
         self.report({'INFO'}, f"グループ '{uname}' を作成しました（{len(targets)} オブジェクト）")
         bpy.ops.object.empty_group_resize_modal('INVOKE_DEFAULT')
+        return {'FINISHED'}
+
+    # ── 既存グループへの追加 ───────────────────────────
+
+    def _add_to_existing(self, context):
+        if self.target_empty == "__NONE__":
+            self.report({'WARNING'}, "追加先のエンプティがありません")
+            return {'CANCELLED'}
+
+        empty = bpy.data.objects.get(self.target_empty)
+        if not empty:
+            self.report({'WARNING'}, f"'{self.target_empty}' が見つかりません")
+            return {'CANCELLED'}
+
+        targets = get_targets(context)
+        if not targets:
+            self.report({'WARNING'}, "メッシュオブジェクトが選択されていません")
+            return {'CANCELLED'}
+
+        bpy.ops.object.select_all(action='DESELECT')
+        for obj in targets:
+            obj.select_set(True)
+        context.view_layer.objects.active = empty
+        bpy.ops.object.parent_set(type='OBJECT', keep_transform=self.keep_transform)
+
+        bpy.ops.object.select_all(action='DESELECT')
+        empty.select_set(True)
+        context.view_layer.objects.active = empty
+
+        self.report({'INFO'}, f"{len(targets)} 個を '{self.target_empty}' に追加しました")
         return {'FINISHED'}
 
 
