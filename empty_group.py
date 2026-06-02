@@ -243,10 +243,12 @@ class OBJECT_OT_empty_group_resize_modal(bpy.types.Operator):
         obj = context.active_object
         if obj is None or obj.type != 'EMPTY':
             return {'CANCELLED'}
-        self._empty     = obj
-        self._init_size = obj.empty_display_size
-        self._init_x    = event.mouse_x
-        self._input     = ""
+        self._empty          = obj
+        self._init_size      = obj.empty_display_size
+        self._init_in_front  = obj.show_in_front   # 元の状態を保存
+        self._init_x         = event.mouse_x
+        self._input          = ""
+        obj.show_in_front    = True                # モーダル中だけ最前面表示
         self._refresh_header(context)
         context.window_manager.modal_handler_add(self)
         return {'RUNNING_MODAL'}
@@ -272,13 +274,18 @@ class OBJECT_OT_empty_group_resize_modal(bpy.types.Operator):
         elif event.type in {'LEFTMOUSE','RET','NUMPAD_ENTER'} and event.value == 'PRESS':
             if self._input:
                 self._apply_input(clamp=True)
-            context.area.header_text_set(None)
+            self._restore(context)
             return {'FINISHED'}
         elif event.type in {'RIGHTMOUSE','ESC'} and event.value == 'PRESS':
             self._empty.empty_display_size = self._init_size
-            context.area.header_text_set(None)
+            self._restore(context)
             return {'CANCELLED'}
         return {'RUNNING_MODAL'}
+
+    def cancel(self, context):
+        """モード切り替えやエリア操作など、Blender による強制終了時の後処理"""
+        self._empty.empty_display_size = self._init_size
+        self._restore(context)
 
     def _apply_mouse(self, event):
         delta  = event.mouse_x - self._init_x
@@ -292,6 +299,11 @@ class OBJECT_OT_empty_group_resize_modal(bpy.types.Operator):
                 self._empty.empty_display_size = v
         except ValueError:
             pass
+
+    def _restore(self, context):
+        """最前面表示をモーダル前の状態に戻し、ヘッダーをクリアする"""
+        self._empty.show_in_front = self._init_in_front
+        context.area.header_text_set(None)
 
     def _refresh_header(self, context):
         size = self._empty.empty_display_size
